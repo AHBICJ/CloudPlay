@@ -1,0 +1,8 @@
+server:
+  port: 47001
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: '*'
