@@ -12,6 +12,7 @@
         <module>producer</module>
         <module>consumer</module>
         <module>config-play</module>
+        <module>idgen</module>
     </modules>
 
 
