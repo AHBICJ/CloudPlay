@@ -1,0 +1,23 @@
+server:
+  port: 46501
+
+spring:
+  application:
+    name: nacos-consumer-back
+  cloud:
+    nacos:
+      discovery:
+        server-addr: 127.0.0.1:8848
+
+ahbicj:
+  idgen:
+    port: 8888
+    namespace: namespace-develop
+    serviceName: forcon
+    serviceGroup: SNOWFLAKE_NODE_GROUP
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: '*'

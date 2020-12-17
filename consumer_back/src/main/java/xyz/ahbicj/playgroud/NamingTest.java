@@ -1,4 +1,4 @@
-package xyz.ahbicj.snowflake;
+package xyz.ahbicj.playgroud;
 
 import com.alibaba.nacos.api.common.Constants;
 import com.alibaba.nacos.api.exception.NacosException;
@@ -18,7 +18,7 @@ import java.util.*;
 
 public class NamingTest {
 
-    private static final String METADATA_KEY_LAST_UPDATE_TIME = "ahbicj.id.snowflake.matadata.lastUpdateTime";
+    private static final String METADATA_KEY_LAST_UPDATE_TIME = "usp.id.snowflake.matadata.lastUpdateTime";
     private static final String SNOWFLAKE_ID_PREFIX = "snowflake_id_";
     private static final String idName = "default";
     private static final String idGroup = "SNOWFLAKE_NODE_GROUP";
@@ -27,7 +27,7 @@ public class NamingTest {
     public static void main(String[] args) throws NacosException {
         Properties namingServiceProperties = new Properties();
         namingServiceProperties.put("namespace","namespace-develop");
-        namingServiceProperties.put("serverAddr","127.0.0.1:8848,127.0.0.1:8849");
+        namingServiceProperties.put("serverAddr","192.168.31.115:8848,192.168.31.115:8849");
         NamingService namingService = NamingFactory.createNamingService(namingServiceProperties);
 
         Instance instance = new Instance();
@@ -35,7 +35,7 @@ public class NamingTest {
         instance.setPort(9999);
         instance.setHealthy(true);
         instance.setEnabled(true);
-        instance.setEphemeral(true);
+        instance.setEphemeral(false);
         Map<String, String> metaData = new HashMap<>();
 
         metaData.put(PreservedMetadataKeys.INSTANCE_ID_GENERATOR, Constants.SNOWFLAKE_INSTANCE_ID_GENERATOR);

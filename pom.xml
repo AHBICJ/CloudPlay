@@ -13,6 +13,8 @@
         <module>consumer</module>
         <module>config-play</module>
         <module>idgen</module>
+        <module>idgen-spring-boot-starter</module>
+        <module>consumer_back</module>
     </modules>
 
 

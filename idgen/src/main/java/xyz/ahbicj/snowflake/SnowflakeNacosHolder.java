@@ -5,11 +5,15 @@ import com.alibaba.nacos.api.exception.NacosException;
 import com.alibaba.nacos.api.naming.NamingFactory;
 import com.alibaba.nacos.api.naming.NamingService;
 import com.alibaba.nacos.api.naming.PreservedMetadataKeys;
+import com.alibaba.nacos.api.naming.listener.Event;
+import com.alibaba.nacos.api.naming.listener.EventListener;
+import com.alibaba.nacos.api.naming.listener.NamingEvent;
 import com.alibaba.nacos.api.naming.pojo.Instance;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.*;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 
@@ -23,43 +27,56 @@ import java.util.concurrent.TimeUnit;
 public class SnowflakeNacosHolder {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(SnowflakeNacosHolder.class);
-    private static final String METADATA_KEY_LAST_UPDATE_TIME = "ahbicj.id.snowflake.matadata.lastUpdateTime";
+    private static final String METADATA_KEY_LAST_UPDATE_TIME = "usp.id.snowflake.matadata.lastUpdateTime";
 
-    private static final String SNOWFLAKE_ID_PREFIX = "snowflake_id_";
-    private static final String idName = "default";
-    private static final String idGroup = "SNOWFLAKE_NODE_GROUP";
-
-    private String nacosAddress;
+    private int workerId = -1;
     private String ip;
     private int port;
 
-    public SnowflakeNacosHolder(String nacosAddress, String ip, int port) {
-        this.nacosAddress = nacosAddress;
-        this.port = port;
-        this.ip = ip;
-    }
+    private String serverAddr;
+    private String namespace;
+    private String serviceName;
+    private String serviceGroup;
+    private String serviceCluster;
 
     private long lastUpdateTime;
-
-    private int workerId;
-
     private NamingService namingService;
 
     public boolean init() {
+        if (workerId != -1) return true;
         try {
-            Properties properties = new Properties();
-            properties.setProperty("serverAddr", nacosAddress);
-            namingService = NamingFactory.createNamingService(properties);
-            List<Instance> instances = namingService.getAllInstances(SNOWFLAKE_ID_PREFIX + idName, idGroup);
-            // if (not exist) {
-            // 主要是注册会刷新时间，如果已经存在节点，直接进行初始化，对比时间
-            if (instances == null || getInstance(instances) == null) {
-                register(namingService);
+            Properties namingServiceProperties = new Properties();
+            namingServiceProperties.put("namespace", namespace);
+            namingServiceProperties.put("serverAddr", serverAddr);
+            namingService = NamingFactory.createNamingService(namingServiceProperties);
+            if (findMyself() == null) {
+                CountDownLatch latch = new CountDownLatch(1);
+                // 这里考虑使用轮询
+                namingService.subscribe(serviceName, serviceGroup, Collections.singletonList(serviceCluster), new EventListener() {
+                    @Override
+                    public void onEvent(Event event) {
+                        NamingEvent namingEvent = (NamingEvent) event;
+                        Instance myself = namingEvent.getInstances().stream().filter(instance -> Objects.equals(instance.getIp(), ip) && Objects.equals(instance.getPort(), port))
+                                .findFirst().orElse(null);
+                        if (myself != null) {
+                            try {
+                                namingService.unsubscribe(serviceName, serviceGroup, Collections.singletonList(serviceCluster), this);
+                                latch.countDown();
+                            } catch (NacosException e) {
+                                e.printStackTrace();
+                            }
+                        }
+                    }
+                });
+                register();
+                if (!latch.await(10, TimeUnit.SECONDS)) {
+                    throw new IllegalStateException("Init workId failed: register lost");
+                }
             }
-            initWorkerId(namingService);
-            scheduledUploadData();
+            initWorkerId();
+//            scheduledUploadData();
             return true;
-        } catch (NacosException e) {
+        } catch (NacosException | InterruptedException e) {
             LOGGER.error("init error", e);
         }
         return false;
@@ -70,35 +87,23 @@ public class SnowflakeNacosHolder {
             Thread thread = new Thread(r, "snowflake-schedule-upload");
             thread.setDaemon(true);
             return thread;
-        }).scheduleWithFixedDelay(this::updateNewData, 1L, 3L, TimeUnit.SECONDS); //每3S上报数据
+        }).scheduleWithFixedDelay(this::updateMeta, 1L, 3L, TimeUnit.SECONDS); //每3S上报数据
     }
 
-    private void updateNewData() {
-        System.out.println("BEEP");
-        if (System.currentTimeMillis() < lastUpdateTime) {
-            return;
-        }
-        try {
-            register(namingService);
-            List<Instance> instances;
-            instances = namingService.getAllInstances(SNOWFLAKE_ID_PREFIX + idName, idGroup);
-            Instance exsitInstance = getInstance(instances);
-            LOGGER.info(exsitInstance.getInstanceId());
-        } catch (NacosException e) {
-            LOGGER.error("updateNewData has error", e);
-        }
+    private void updateMeta() {
+        // https://github.com/alibaba/nacos/issues/4467
+        // register(); 在 1.4.1 之前 再次 register 同样的 ip:port 会得到一个新的instanceId ...
+        // TODO update meta lastUpdateTime
     }
 
-    private void initWorkerId(NamingService naming) throws NacosException {
-        List<Instance> instances;
-        instances = naming.getAllInstances(SNOWFLAKE_ID_PREFIX + idName, idGroup);
-        Instance exsitInstance = getInstance(instances);
-        if (exsitInstance != null) {
-            String lutStr = exsitInstance.getMetadata().get(METADATA_KEY_LAST_UPDATE_TIME);
+    private void initWorkerId() throws NacosException {
+        Instance myself = findMyself();
+        if (myself != null) {
+            String lutStr = myself.getMetadata().get(METADATA_KEY_LAST_UPDATE_TIME);
             if (null != lutStr) {
                 long lut = Long.parseLong(lutStr);
                 if (lut < System.currentTimeMillis()) {
-                    workerId = Integer.parseInt(exsitInstance.getInstanceId());
+                    workerId = Integer.parseInt(myself.getInstanceId());
                     LOGGER.info("init workerId:{}", workerId);
                     return;
                 }
@@ -106,12 +111,12 @@ public class SnowflakeNacosHolder {
             }
             throw new IllegalStateException("Init workId failed: lutStr not found");
         }
-//        throw new IllegalStateException("Init workId failed: this instance may not register");
+        throw new IllegalStateException("Init workId failed: this instance may not register");
     }
 
-    private void register(NamingService naming) throws NacosException {
+    private void register() throws NacosException {
         Instance instance = initInstance();
-        naming.registerInstance(SNOWFLAKE_ID_PREFIX + idName, idGroup, instance);
+        namingService.registerInstance(serviceName, serviceGroup, instance);
     }
 
     private Instance initInstance() {
@@ -126,13 +131,83 @@ public class SnowflakeNacosHolder {
         metaData.put(PreservedMetadataKeys.INSTANCE_ID_GENERATOR, Constants.SNOWFLAKE_INSTANCE_ID_GENERATOR);
         lastUpdateTime = System.currentTimeMillis();
         metaData.put(METADATA_KEY_LAST_UPDATE_TIME, Objects.toString(lastUpdateTime));
+
         instance.setMetadata(metaData);
+        instance.setServiceName(serviceName);
+        instance.setClusterName(serviceCluster);
+
         return instance;
     }
 
-    private Instance getInstance(List<Instance> instances) {
+    private Instance findMyself() throws NacosException {
+        List<Instance> instances = namingService.getAllInstances(serviceName, serviceGroup, Collections.singletonList(serviceCluster));
         return instances.stream().filter(instance -> Objects.equals(instance.getIp(), ip) && Objects.equals(instance.getPort(), port))
                 .findFirst().orElse(null);
+    }
+
+
+    public int getWorkerId() {
+        return workerId;
+    }
+
+    public void setWorkerId(int workerId) {
+        this.workerId = workerId;
+    }
+
+    public String getIp() {
+        return ip;
+    }
+
+    public void setIp(String ip) {
+        this.ip = ip;
+    }
+
+    public int getPort() {
+        return port;
+    }
+
+    public void setPort(int port) {
+        this.port = port;
+    }
+
+    public String getServerAddr() {
+        return serverAddr;
+    }
+
+    public void setServerAddr(String serverAddr) {
+        this.serverAddr = serverAddr;
+    }
+
+    public String getNamespace() {
+        return namespace;
+    }
+
+    public void setNamespace(String namespace) {
+        this.namespace = namespace;
+    }
+
+    public String getServiceName() {
+        return serviceName;
+    }
+
+    public void setServiceName(String serviceName) {
+        this.serviceName = serviceName;
+    }
+
+    public String getServiceGroup() {
+        return serviceGroup;
+    }
+
+    public void setServiceGroup(String serviceGroup) {
+        this.serviceGroup = serviceGroup;
+    }
+
+    public String getServiceCluster() {
+        return serviceCluster;
+    }
+
+    public void setServiceCluster(String serviceCluster) {
+        this.serviceCluster = serviceCluster;
     }
 
 }
